@@ -1,0 +1,9 @@
+1. DB adding for questions and id saving
+2. tackle same file ingestion again -  its time wastage if its ingest again
+3. prompt maker for our vision based images question and topic executor
+4. vectore store along with embedding id need to save question topic also- hybrid search will execute 
+5. Agentic Rag
+6. Chat session Memory enabled 
+7. UI
+8. Binding everything into API
+9. image pdfs 
