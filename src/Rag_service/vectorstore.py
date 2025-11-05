@@ -5,6 +5,7 @@ import pickle
 from typing import List, Any
 from sentence_transformers import SentenceTransformer
 from embedding import EmbeddingPipeline
+# from langchain_community.retrievers import 
 
 class FaissVectorStore:
     def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = "all-MiniLM-L6-v2", chunk_size: int = 1000, chunk_overlap: int = 200):
@@ -59,6 +60,7 @@ class FaissVectorStore:
         for idx, dist in zip(I[0], D[0]):
             meta = self.metadata[idx] if idx < len(self.metadata) else None
             results.append({"index": idx, "distance": dist, "metadata": meta})
+            
         return results
 
     def query(self, query_text: str, top_k: int = 5):
