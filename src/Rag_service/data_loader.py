@@ -4,6 +4,8 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoa
 from langchain_community.document_loaders import Docx2txtLoader
 from langchain_community.document_loaders.excel import UnstructuredExcelLoader
 from langchain_community.document_loaders import JSONLoader
+from task_builder import LLMtool
+
 
 def load_all_documents(data_dir: str) -> List[Any]:
     """
@@ -17,6 +19,7 @@ def load_all_documents(data_dir: str) -> List[Any]:
     print(f"[DEBUG] Data path: {data_path}")
     documents = []
 
+   
     # PDF files
     pdf_files = list(data_path.glob('**/*.pdf'))
     print(f"[DEBUG] Found {len(pdf_files)} PDF files: {[str(f) for f in pdf_files]}")
@@ -95,9 +98,57 @@ def load_all_documents(data_dir: str) -> List[Any]:
         except Exception as e:
             print(f"[ERROR] Failed to load JSON {json_file}: {e}")
 
+    # Image files could be added here using LLMtool if needed
+    llm_tool = LLMtool()
+    image_files = list(data_path.glob('**/*.[pj][pn]g')) + list(data_path.glob('**/*.jpeg')) + list(data_path.glob('**/*.bmp'))
+    print(f"[DEBUG] Found {len(image_files)} image files: {[str(f) for f in image_files]}")
+    for image_file in image_files:
+        print(f"[DEBUG] Loading Image: {image_file}")
+        description = llm_tool.describe_image(image_file)
+        print(f"[DEBUG] Loaded Image description from {image_file}: {description}")
+
     print(f"[DEBUG] Total loaded documents: {len(documents)}")
     return documents
 
+def load_document(file_path: str, im_file: bool = False) -> List[Any]:
+    """
+    Load documents from a single file based on its extension.
+    Supported: PDF, TXT, CSV, Excel, Word, JSON , IMAGE_FILE
+    """
+    path = Path(file_path).resolve()
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"File {path} does not exist or is not a file.")
+    print(f"[DEBUG] Loading documents from file: {path}")
+    documents = []
+
+    try:
+        if im_file :    
+            llm_tool = LLMtool()
+            description = llm_tool.describe_image(path)
+            print(f"[DEBUG] Loaded Image description from {path}: {description}")
+            return [{"content": description, "metadata": {"source": str(path)}}]
+        elif path.suffix.lower() == '.pdf':
+            loader = PyPDFLoader(str(path))
+        elif path.suffix.lower() == '.txt':
+            loader = TextLoader(str(path))
+        elif path.suffix.lower() == '.csv':
+            loader = CSVLoader(str(path))
+        elif path.suffix.lower() == '.xlsx':
+            loader = UnstructuredExcelLoader(str(path))
+        elif path.suffix.lower() == '.docx':
+            loader = Docx2txtLoader(str(path))
+        elif path.suffix.lower() == '.json':
+            loader = JSONLoader(str(path))
+        else:
+            raise ValueError(f"Unsupported file type: {path.suffix}")
+
+        loaded = loader.load()
+        print(f"[DEBUG] Loaded {len(loaded)} documents from {path}")
+        documents.extend(loaded)
+    except Exception as e:
+        print(f"[ERROR] Failed to load {path}: {e}")
+
+    return documents
 # Example usage
 if __name__ == "__main__":
     docs = load_all_documents("data")
