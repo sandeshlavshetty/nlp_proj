@@ -7,3 +7,5 @@
 7. UI
 8. Binding everything into API
 9. image pdfs 
+10. if image is too big then text extractor field will fail
+11. same 10. issue with json extractor need chunkinizer and parse first few chunks get intital detials then parse other chunks for q1 versus text json formation
