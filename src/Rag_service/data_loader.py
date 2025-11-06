@@ -124,7 +124,7 @@ def load_document(file_path: str, im_file: bool = False) -> List[Any]:
     try:
         if im_file :    
             llm_tool = LLMtool()
-            description = llm_tool.describe_image(path)
+            description = llm_tool.ocr_pdf_with_genai(path)
             print(f"[DEBUG] Loaded Image description from {path}: {description}")
             return [{"content": description, "metadata": {"source": str(path)}}]
         elif path.suffix.lower() == '.pdf':

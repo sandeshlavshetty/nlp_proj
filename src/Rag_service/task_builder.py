@@ -2,8 +2,12 @@
 import os
 from urllib import response
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
+try:
+    from google import genai
+except Exception:
+    genai = None
+    print("[WARN] optional package 'google.genai' not importable. GenAI vision features will be disabled until you install 'google-genai'.")
 from typing import List, Dict, Any
 import json
 from langchain.messages import HumanMessage, AIMessage, SystemMessage
@@ -13,6 +17,11 @@ import base64
 import os
 from typing import Optional
 from PIL import Image  # optional: for resizing (pip install pillow)
+import fitz  # PyMuPDF
+import tempfile
+import os
+from PIL import Image
+import io
 
 load_dotenv()
 class LLMtool:
@@ -21,12 +30,17 @@ class LLMtool:
         print(f"[INFO] LLM initialized: {llm_model}")
         if "GROQ_API_KEY" in os.environ:
             groq_api_key = os.environ["GROQ_API_KEY"]
-            self.llm = ChatGroq(groq_api_key=groq_api_key, model_name=llm_model)
+            # self.llm = ChatGroq(groq_api_key=groq_api_key, model_name=llm_model)
             print(f"[INFO] Groq LLM initialized: {llm_model}")
         elif "GOOGLE_API_KEY" in os.environ:
             google_api_key = os.environ["GOOGLE_API_KEY"]
             self.llm = ChatGoogleGenerativeAI(google_api_key=google_api_key, model=llm_model)
             print(f"[INFO] Google LLM initialized: {llm_model}")
+            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("Environment variable GOOGLE_API_KEY or GEMINI_API_KEY must be set")
+            self.client = genai.Client(api_key=api_key)
+            print(f"[INFO] Google GenAI client initialized with model {llm_model}")
             
     @staticmethod
     def try_parse_json(s):
@@ -47,120 +61,145 @@ class LLMtool:
                 except Exception:
                     return None
 
-    def _upload_image_to_url(image_path: str) -> Optional[str]:
+    def _upload_image_to_url(self,image_path: str) -> Optional[str]:
         """
         OPTIONAL: implement an uploader that returns a public URL (S3, file.io, etc).
         Return None if you don't want to upload.
         """
         return None
 
-    def describe_image(self, image_path: str):
-        prompt = "Describe this image in detail. If text is present, extract it."
-        system_msg = SystemMessage("You are an image caption and OCR assistant.")
-        human_msg = HumanMessage(prompt)
-
-        messages = [system_msg, human_msg]
-
-        # 1) Try provider-supported image kwarg (preferred)
+    def ocr_pdf_with_genai(self, uploaded_file, vision_model_name: str = "gemini-2.5-flash") -> str:
+        """
+        Process a PDF via PyMuPDF, split pages into halves (for clarity),
+        then send each image part to the GenAI vision model to extract full text.
+        Returns the concatenated extracted text.
+        """
         try:
-            # Many LangChain provider wrappers accept an images kwarg (list of paths or bytes).
-            # Use images=[image_path] for local file path (works for some local providers).
-            response = self.llm.invoke(messages, images=[image_path])
-            return response.content
-        except TypeError:
-            # provider.invoke doesn't accept images kwarg
-            pass
-        except Exception:
-            # provider may raise if local paths are not supported by remote service
-            pass
+            # Save uploaded file to temp
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded_file.read())
+                tmp_path = tmp.name
 
-        # 2) Try using a public URL (if you implement uploader)
-        url = self._upload_image_to_url(image_path)
-        if url:
-            human_with_url = HumanMessage(prompt + f"\n\nImage URL: {url}")
-            try:
-                response = self.llm.invoke([system_msg, human_with_url])
-                return response.content
-            except Exception:
-                pass
+            doc = fitz.open(tmp_path)
+            all_text = []
 
-        # 3) Fallback: inline base64 data URI inside the message
-        #    Resize first if image is large to avoid request size limits
-        try:
-            # Optional: reduce size if pillow is available and image is large
-            try:
-                with Image.open(image_path) as im:
-                    max_pixels = 1024 * 1024 * 2  # ~2MP
-                    if im.width * im.height > max_pixels:
-                        ratio = (max_pixels / (im.width * im.height)) ** 0.5
-                        new_size = (int(im.width * ratio), int(im.height * ratio))
-                        im = im.resize(new_size)
-                        # write to bytes
-                        from io import BytesIO
-                        buf = BytesIO()
-                        im.save(buf, format="JPEG", quality=85)
-                        img_bytes = buf.getvalue()
-                    else:
-                        with open(image_path, "rb") as f:
-                            img_bytes = f.read()
-            except Exception:
-                # pillow not available or resize failed, fall back to reading raw bytes
-                with open(image_path, "rb") as f:
-                    img_bytes = f.read()
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                mat = fitz.Matrix(2.0, 2.0)
+                pix = page.get_pixmap(matrix=mat)
+                img_data = pix.tobytes("png")
+                page_img = Image.open(io.BytesIO(img_data))
+                w, h = page_img.size
 
-            img_b64 = base64.b64encode(img_bytes).decode("ascii")
-            ext = os.path.splitext(image_path)[1].lstrip(".").lower() or "jpg"
-            data_uri = f"data:image/{ext};base64,{img_b64}"
-            human_b64 = HumanMessage(prompt + "\n\nImage (base64): " + data_uri)
-            response = self.llm.invoke([system_msg, human_b64])
-            return response.content
+                # Optionally split image if very tall
+                halves = [page_img.crop((0, 0, w, h//2)), page_img.crop((0, h//2, w, h))]
+
+                page_text = ""
+                for part_idx, part in enumerate(halves):
+                    prompt = (
+                        "Extract ALL text from this exam paper image.\n"
+                        "- Keep exact wording.\n"
+                        "- Maintain numbering.\n"
+                        "- Do not summarise or skip anything.\n"
+                    )
+
+                    # The GenAI SDK allows multimodal input: text prompt + image as bytes
+                    # According to docs: client.models.generate_content(model=..., contents=[prompt, image_bytes]) :contentReference[oaicite:2]{index=2}
+                    image_bytes = io.BytesIO()
+                    part.save(image_bytes, format="PNG")
+                    image_bytes = image_bytes.getvalue()
+                    
+                    image_part = genai.types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+
+
+                    response = self.client.models.generate_content(
+                        model=vision_model_name,
+                        contents=[prompt, image_part]
+                    )
+                    # get response text
+                    text_piece = getattr(response, "text", None) or getattr(response, "content", "")
+                    page_text += text_piece + "\n"
+                    print(f"[DEBUG] Extracted text from page {page_num+1}, part {part_idx+1}:\n{text_piece}")
+
+                all_text.append(page_text)
+            doc.close()
+            os.unlink(tmp_path)
+            return "\n".join(all_text)
         except Exception as e:
-            print(f"[ERROR] Failed to send image to LLM: {e}")
-            return None
+            print(f"[ERROR] Exception during PDF OCR: {e}")
+            return ""
+
+
+
     
     def tagger(self, text: str) -> Dict:
         # Construct a rich prompt to extract all necessary info
         prompt = f"""
-    You are an intelligent exam paper parser.
+You are an intelligent exam paper parser.
 
-    Extract the following information from the given question paper text and return it in **strict JSON** format:
+Your task is to extract structured information from the given question paper text and return it in **strict JSON format only**.
 
-    Fields required:
-    1. "date_of_exam" - in format DD/MM/YY (for example: "25/08/22")
-    2. "type_of_exam" - one of ["sessional1", "sessional2", "Midsem", "Endsem"]
-    3. "paper_code" - example: "CSL420", "HUL322", etc.
-    4. "subject_name" - full subject name written after the paper code
-    5. "questions" - dictionary where:
-    - Keys are question numbers ("Q1", "Q2", etc.)
-    - If sub-questions exist (like "A)" or "B)"), their keys should be "Q1_A)", "Q1_B)", etc.
-    - Values should be the full question text (without marks or CO codes).
+### Required JSON structure:
+{{
+  "date_of_exam": "DD/MM/YY",
+  "type_of_exam": "Midsem" | "Endsem" | "sessional1" | "sessional2",
+  "paper_code": "CSL302",
+  "subject_name": "Computer Networks",
+  "questions": {{
+    "Q1_A": "Full question text of Q1(A)",
+    "Q1_B": "Full question text of Q1(B)",
+    "Q2_A": "Full question text of Q2(A)",
+    "Q2_B": "Full question text of Q2(B)",
+    ...
+  }}
+}}
 
-    Example output format:
-    {{
-    "date_of_exam": "25/08/22",
-    "type_of_exam": "Midsem",
-    "paper_code": "CSL420",
-    "subject_name": "Computer Networks",
-    "questions": {{
-        "Q1": "Consider a network connected two systems located 9000 kilometers apart...",
-        "Q1_A)": "Explain the calculation of minimum sequence number field.",
-        "Q2": "How does the stop and wait protocol handle the following..."
-    }}
-    }}
+---
 
-    Now extract this information from the following text:
+### Extraction Rules:
 
-    {text}
-    """
+1. **Main questions**
+   - Always start with labels like “Q1”, “Q2”, “Q3”, etc.
+   - You must capture every question number even if it has only one subpart.
 
-        # # Send to LLM
-        # response = self.llm.chat(
-        #     model=self.llm_model,
-        #     messages=[
-        #         {"role": "system", "content": "You are a text tagger assistant that returns clean, strict JSON only."},
-        #         {"role": "user", "content": prompt}
-        #     ]
-        # )
+2. **Subquestions**
+   - Denoted by capital letters **A, B, C, D, E** in parentheses or after the question number.
+   - Use the key format `"Q1_A"`, `"Q1_B"`, etc.
+   - Combine everything under that subquestion, including inner parts labeled “i.”, “ii.”, “iii.”, etc., into a single text block.
+   - Preserve tables, equations, or diagrams as plain text references (like "[Table shown below]" or "[Graph shown above]").
+
+3. **Inner subpoints (i, ii, iii, etc.)**
+   - Do **not** split them into separate questions.
+   - Keep them inline as text inside that subquestion value.
+
+4. **Header extraction**
+   - Date: extract from “Date:” or similar header lines.
+   - Paper code: typically like “CSL302”.
+   - Subject name: the text right after the paper code.
+   - Type of exam: deduce from “End Semester”, “Mid Semester”, “Sessional I/II”.
+
+5. **Do not include** marks, CO codes, or “Important Instructions”.
+
+---
+
+### Example Output:
+{{
+  "date_of_exam": "21/11/22",
+  "type_of_exam": "Endsem",
+  "paper_code": "CSL302",
+  "subject_name": "Computer Networks",
+  "questions": {{
+    "Q1_A": "Suppose a router has built up the routing table shown below. The router can deliver packets directly over Interfaces 0 and 1, or forward packets to routers R2, R3, or R4. Describe what the router does with packets addressed to the given destinations (a) 128.96.39.10 (b) 128.96.40.12 (c) 128.96.40.151 (d) 192.4.153.17 (e) 192.4.153.90 [Table shown below]",
+    "Q1_B": "Consider the following network with five routers A, B, C, D, and E using Link State Routing. (i) Show the link state packets (LSPs) prepared by each router. (ii) How node A builds the routing table using the forward search algorithm, showing each step clearly."
+  }}
+}}
+
+---
+
+Now extract this structured JSON from the following question paper text:
+
+{text}
+"""
         system_msg = SystemMessage("You are a text tagger assistant that returns clean, strict JSON only.")
         human_msg = HumanMessage(prompt)
 
