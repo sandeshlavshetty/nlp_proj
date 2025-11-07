@@ -101,7 +101,7 @@ class FaissVectorStore:
     
     def hybrid_query(self, query: str, alpha: float = 0.7, top_k: int = 5):
         """
-        alpha = weight for semantic similarity (0–1)
+        alpha = weight for semantic similarity (0_1)
         (1 - alpha) = weight for keyword (BM25)
         """
         # semantic
@@ -140,7 +140,7 @@ class FaissVectorStore:
         faiss.write_index(self.index, faiss_path)
 
         # save metadata dict and next id in pickle for exact restore
-        state = {"next_id": self._next_id, "metadata": self.metadata}
+        state = {"next_id": self._next_id, "metadata": self.metadata, "bm25_corpus": self.bm25_corpus}
         with open(meta_path, "wb") as f:
             pickle.dump(state, f)
 

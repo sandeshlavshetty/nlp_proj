@@ -24,7 +24,8 @@ class JSONQuestionChunker:
             chunk = {
                 "id": q_key,
                 "text": q_text,
-                "metadata": {**common_meta, "question_id": q_key}
+                "title": f"{common_meta.get('paper_code') or ''} {q_key}",
+                "metadata": {**common_meta, "question_id": q_key, "question_text": q_text}
             }
             chunks.append(chunk)
         print(f"[INFO] Created {len(chunks)} question chunks.")

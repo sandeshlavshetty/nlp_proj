@@ -25,7 +25,7 @@ import io
 
 load_dotenv()
 class LLMtool:
-    def __init__(self, llm_model: str = "gemma2-9b-it"):
+    def __init__(self, llm_model: str = "gemini-2.5-flash"):
         self.llm_model = llm_model
         print(f"[INFO] LLM initialized: {llm_model}")
         if "GROQ_API_KEY" in os.environ:
