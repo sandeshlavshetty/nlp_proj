@@ -164,45 +164,46 @@ class FaissVectorStore:
     def load(self):
         faiss_path = os.path.join(self.persist_dir, "faiss.index")
         meta_path = os.path.join(self.persist_dir, "metadata.pkl")
-        # load index
+
+        # --- Load Faiss index ---
         self.index = faiss.read_index(faiss_path)
 
-        # if the index isn't an IDMap, try to wrap it for compatibility
+        # Ensure it's wrapped in an IDMap
         if not isinstance(self.index, faiss.IndexIDMap):
             try:
-                # convert to IDMap by wrapping
                 self.index = faiss.IndexIDMap(self.index)
             except Exception:
                 pass
 
-        # load metadata state; support old format where metadata was a list
+        # --- Load metadata and state ---
         with open(meta_path, "rb") as f:
             state = pickle.load(f)
-        self._next_id = state.get("next_id", 0)
-        self.metadata = {int(k): v for k, v in state.get("metadata", {}).items()}
-        self.bm25_corpus = state.get("bm25_corpus", [])
-
-        if self.bm25_corpus:
-            self.bm25 = BM25Okapi(self.bm25_corpus)
 
         if isinstance(state, dict) and "metadata" in state and "next_id" in state:
             self._next_id = state.get("next_id", 0)
-            self.metadata = {int(k): v for k, v in state.get("metadata", {}).items()} if isinstance(state.get("metadata"), dict) else {}
+            self.metadata = {
+                int(k): v for k, v in state.get("metadata", {}).items()
+            } if isinstance(state.get("metadata"), dict) else {}
+
+            # Restore BM25 if saved
+            self.bm25_corpus = state.get("bm25_corpus", [])
+            if self.bm25_corpus:
+                tokenized_corpus = [self._tokenize(t) for t in self.bm25_corpus]
+                self.bm25 = BM25Okapi(tokenized_corpus)
+
         else:
-            # legacy: a list of metadata dicts was saved - convert to id map
+            # legacy format: metadata is a list
             legacy = state
             self.metadata = {}
             for i, m in enumerate(legacy):
-                try:
-                    mid = int(i)
-                except Exception:
-                    mid = i
+                mid = int(i)
                 mm = dict(m)
                 mm["id"] = mid
                 self.metadata[mid] = mm
             self._next_id = max(self.metadata.keys()) + 1 if self.metadata else 0
 
         print(f"[INFO] Loaded Faiss index and metadata from {self.persist_dir} (next_id={self._next_id})")
+
 
     def search(self, query_embedding: np.ndarray, top_k: int = 5):
         D, I = self.index.search(query_embedding, top_k)
