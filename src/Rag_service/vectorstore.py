@@ -178,6 +178,12 @@ class FaissVectorStore:
         # load metadata state; support old format where metadata was a list
         with open(meta_path, "rb") as f:
             state = pickle.load(f)
+        self._next_id = state.get("next_id", 0)
+        self.metadata = {int(k): v for k, v in state.get("metadata", {}).items()}
+        self.bm25_corpus = state.get("bm25_corpus", [])
+
+        if self.bm25_corpus:
+            self.bm25 = BM25Okapi(self.bm25_corpus)
 
         if isinstance(state, dict) and "metadata" in state and "next_id" in state:
             self._next_id = state.get("next_id", 0)
