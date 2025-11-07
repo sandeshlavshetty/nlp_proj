@@ -12,7 +12,7 @@ tagged = llm_tool.tagger(extracted_text)
 # # Step 2: Convert to question chunks
 chunker = JSONQuestionChunker()
 question_chunks = chunker.json_to_chunks(tagged)
-embeddings = chunker.embed_chunks(question_chunks)
+# embeddings = chunker.embed_chunks(question_chunks)
 
 # # Step 3: Build hybrid vector store
 # store = FaissVectorStore("faiss_store")
@@ -35,7 +35,7 @@ store.build_from_question_chunks(question_chunks)
 
 
 # Step 4: Query hybrid search
-results = store.hybrid_query("Explain link Maximum Transmission Unit", top_k=3)
+results = store.hybrid_query("Explain link Unipolar and differential manchester", top_k=3)
 print(results)
 # for r in results:
 #     print(r["metadata"].get("question_id"), "→", r.get("text", r["metadata"].get("text", "[No text found]")))
