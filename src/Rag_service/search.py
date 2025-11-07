@@ -37,6 +37,16 @@ class RAGSearch:
         response = self.llm.invoke([prompt])
         return response.content
 
+    def hybrid_search_and_summarize(self, query: str, alpha: float = 0.7, top_k: int = 5):
+        results = self.vectorstore.hybrid_query(query, alpha=alpha, top_k=top_k)
+        texts = [r["metadata"].get("text", "") for r in results if r["metadata"]]
+        context = "\n\n".join(texts)
+        if not context:
+            return "No relevant questions found."
+        prompt = f"Answer based on the following question paper context:\n\n{context}\n\nQuery: {query}\nAnswer:"
+        response = self.llm.invoke([prompt])
+        return response.content
+
 # Example usage
 if __name__ == "__main__":
     rag_search = RAGSearch()

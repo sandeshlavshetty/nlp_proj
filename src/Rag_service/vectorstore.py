@@ -7,6 +7,8 @@ import csv
 from typing import List, Any, Dict
 from sentence_transformers import SentenceTransformer
 from embedding import EmbeddingPipeline
+from rank_bm25 import BM25Okapi
+import re
 
 class FaissVectorStore:
     def __init__(self, persist_dir: str = "faiss_store", embedding_model: str = "all-MiniLM-L6-v2", chunk_size: int = 1000, chunk_overlap: int = 200):
@@ -22,6 +24,9 @@ class FaissVectorStore:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         print(f"[INFO] Loaded embedding model: {embedding_model}")
+        
+        self.bm25_corpus = []
+        self.bm25 = None
 
     def build_from_documents(self, documents: List[Any]):
         print(f"[INFO] Building vector store from {len(documents)} raw documents...")
@@ -74,6 +79,59 @@ class FaissVectorStore:
 
         self._next_id += n
         print(f"[INFO] Added {n} vectors to Faiss index with ids {self._next_id - n}..{self._next_id - 1}.")
+
+    def build_from_question_chunks(self, question_chunks: List[Dict[str, Any]]):
+            """
+            Build store directly from question-based chunks (JSON parsed).
+            """
+            texts = [c["text"] for c in question_chunks]
+            embeddings = self.model.encode(texts, show_progress_bar=True)
+
+            self.add_embeddings(np.array(embeddings).astype('float32'), [c["metadata"] for c in question_chunks])
+
+            # Build BM25
+            tokenized_corpus = [self._tokenize(t) for t in texts]
+            self.bm25 = BM25Okapi(tokenized_corpus)
+            self.bm25_corpus = texts
+            print(f"[INFO] Built BM25 index for {len(self.bm25_corpus)} question texts.")
+            self.save()
+
+    def _tokenize(self, text):
+        return re.findall(r"\w+", text.lower())
+    
+    def hybrid_query(self, query: str, alpha: float = 0.7, top_k: int = 5):
+        """
+        alpha = weight for semantic similarity (0–1)
+        (1 - alpha) = weight for keyword (BM25)
+        """
+        # semantic
+        query_emb = self.model.encode([query]).astype('float32')
+        semantic_results = self.search(query_emb, top_k=top_k * 2)
+
+        # keyword (BM25)
+        if self.bm25:
+            tokenized_query = self._tokenize(query)
+            bm25_scores = self.bm25.get_scores(tokenized_query)
+            bm25_top_idx = np.argsort(bm25_scores)[::-1][:top_k * 2]
+        else:
+            bm25_scores = np.zeros(len(self.bm25_corpus))
+            bm25_top_idx = []
+
+        # normalize & merge scores
+        hybrid_scores = {}
+        for r in semantic_results:
+            hybrid_scores[r["id"]] = alpha * (1 / (r["distance"] + 1e-8))
+
+        for idx in bm25_top_idx:
+            doc_id = list(self.metadata.keys())[idx]
+            bm25_score = bm25_scores[idx]
+            hybrid_scores[doc_id] = hybrid_scores.get(doc_id, 0) + (1 - alpha) * bm25_score
+
+        # final ranking
+        ranked = sorted(hybrid_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        results = [{"id": doc_id, "score": score, "metadata": self.metadata[doc_id]} for doc_id, score in ranked]
+        return results
+    
 
     def save(self):
         faiss_path = os.path.join(self.persist_dir, "faiss.index")
